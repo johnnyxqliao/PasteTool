@@ -31,3 +31,10 @@ Flow Launcher's Python JSON-RPC results do not expose a reliable selected-row `C
 - Context menu item "只复制到剪贴板": copy only.
 
 If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to make `Ctrl+C` directly copy the selected history item.
+
+## Changelog
+
+### 0.1.1
+
+- Removed `pywin32` and switched clipboard operations to built-in Windows APIs through `ctypes`.
+- Fixes `ImportError: DLL load failed while importing win32api` under Flow Launcher's embedded Python.

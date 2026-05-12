@@ -1,13 +1,49 @@
+import ctypes
 import hashlib
-import os
 import struct
 import time
 from pathlib import Path
 
-import win32api
-import win32clipboard
-import win32con
 from PIL import Image, ImageGrab
+
+CF_UNICODETEXT = 13
+CF_DIB = 8
+CF_HDROP = 15
+GMEM_MOVEABLE = 0x0002
+KEYEVENTF_KEYUP = 0x0002
+VK_CONTROL = 0x11
+VK_V = 0x56
+
+kernel32 = ctypes.windll.kernel32
+shell32 = ctypes.windll.shell32
+user32 = ctypes.windll.user32
+
+kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.restype = ctypes.c_bool
+kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+kernel32.GlobalFree.restype = ctypes.c_void_p
+kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+kernel32.GlobalSize.restype = ctypes.c_size_t
+
+user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+user32.OpenClipboard.restype = ctypes.c_bool
+user32.CloseClipboard.argtypes = []
+user32.CloseClipboard.restype = ctypes.c_bool
+user32.EmptyClipboard.argtypes = []
+user32.EmptyClipboard.restype = ctypes.c_bool
+user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardData.argtypes = [ctypes.c_uint]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+
+shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+shell32.DragQueryFileW.restype = ctypes.c_uint
 
 
 def read_clipboard_snapshot(plugin_dir: Path):
@@ -15,8 +51,8 @@ def read_clipboard_snapshot(plugin_dir: Path):
     if not _open_clipboard():
         return None
     try:
-        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
-            paths = list(win32clipboard.GetClipboardData(win32con.CF_HDROP))
+        if user32.IsClipboardFormatAvailable(CF_HDROP):
+            paths = _read_files()
             if paths:
                 normalized = [str(Path(path)) for path in paths]
                 return {
@@ -25,9 +61,9 @@ def read_clipboard_snapshot(plugin_dir: Path):
                     "hash": _hash_text("\n".join(normalized))
                 }
 
-        has_dib = win32clipboard.IsClipboardFormatAvailable(win32con.CF_DIB)
-        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-            text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        has_dib = user32.IsClipboardFormatAvailable(CF_DIB)
+        if user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            text = _read_text()
             if text and not has_dib:
                 return {
                     "kind": "text",
@@ -35,10 +71,7 @@ def read_clipboard_snapshot(plugin_dir: Path):
                     "hash": _hash_text(text)
                 }
     finally:
-        try:
-            win32clipboard.CloseClipboard()
-        except Exception:
-            pass
+        user32.CloseClipboard()
 
     image = ImageGrab.grabclipboard()
     if isinstance(image, Image.Image):
@@ -68,11 +101,11 @@ def read_clipboard_snapshot(plugin_dir: Path):
 def set_record_to_clipboard(record):
     kind = record["kind"]
     if kind == "text":
-        _set_text(record["content"] or "")
+        _set_clipboard_data(CF_UNICODETEXT, _text_to_hglobal(record["content"] or ""))
     elif kind == "image":
         _set_image(Path(record["image_path"]))
     elif kind == "files":
-        _set_files(record.get("files") or [])
+        _set_clipboard_data(CF_HDROP, _bytes_to_hglobal(_build_hdrop(record.get("files") or [])))
 
 
 def paste_record(record):
@@ -81,39 +114,72 @@ def paste_record(record):
     _send_ctrl_v()
 
 
-def _set_text(text):
-    if not _open_clipboard():
-        return
+def _read_text():
+    handle = user32.GetClipboardData(CF_UNICODETEXT)
+    if not handle:
+        return ""
+    pointer = kernel32.GlobalLock(handle)
+    if not pointer:
+        return ""
     try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        return ctypes.wstring_at(pointer)
     finally:
-        win32clipboard.CloseClipboard()
+        kernel32.GlobalUnlock(handle)
+
+
+def _read_files():
+    handle = user32.GetClipboardData(CF_HDROP)
+    if not handle:
+        return []
+    count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+    paths = []
+    for index in range(count):
+        length = shell32.DragQueryFileW(handle, index, None, 0)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        shell32.DragQueryFileW(handle, index, buffer, length + 1)
+        paths.append(buffer.value)
+    return paths
 
 
 def _set_image(path):
     if not path.is_absolute():
         path = Path(__file__).resolve().parents[1] / path
     image = Image.open(path).convert("RGB")
-    dib = _image_to_dib(image)
-    if not _open_clipboard():
-        return
-    try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_DIB, dib)
-    finally:
-        win32clipboard.CloseClipboard()
+    _set_clipboard_data(CF_DIB, _bytes_to_hglobal(_image_to_dib(image)))
 
 
-def _set_files(paths):
-    payload = _build_hdrop(paths)
+def _set_clipboard_data(fmt, handle):
+    if not handle:
+        return
     if not _open_clipboard():
+        kernel32.GlobalFree(handle)
         return
     try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_HDROP, payload)
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(fmt, handle):
+            kernel32.GlobalFree(handle)
     finally:
-        win32clipboard.CloseClipboard()
+        user32.CloseClipboard()
+
+
+def _text_to_hglobal(text):
+    data = (text + "\0").encode("utf-16le")
+    return _bytes_to_hglobal(data)
+
+
+def _bytes_to_hglobal(data):
+    handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not handle:
+        return None
+    pointer = kernel32.GlobalLock(handle)
+    if not pointer:
+        kernel32.GlobalFree(handle)
+        return None
+    try:
+        ctypes.memmove(pointer, data, len(data))
+    finally:
+        kernel32.GlobalUnlock(handle)
+    return handle
 
 
 def _image_to_dib(image):
@@ -133,19 +199,17 @@ def _build_hdrop(paths):
 
 
 def _send_ctrl_v():
-    win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-    win32api.keybd_event(ord("V"), 0, 0, 0)
-    win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)
-    win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    user32.keybd_event(VK_V, 0, 0, 0)
+    user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
 
 def _open_clipboard(retries=12, delay=0.04):
     for _ in range(retries):
-        try:
-            win32clipboard.OpenClipboard()
+        if user32.OpenClipboard(None):
             return True
-        except Exception:
-            time.sleep(delay)
+        time.sleep(delay)
     return False
 
 
