@@ -43,3 +43,11 @@ If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to mak
 
 - Adds `【Text】`, `【Image】`, and `【File】` labels to result titles.
 - Sends paste from a delayed helper process so the target app can regain focus before `Ctrl+V`.
+
+### 0.1.3
+
+- Adds debug logging to `Data/paste_tool.log` for paste actions, clipboard writes, delayed paste helper startup, foreground window, and `SendInput` results.
+
+### 0.1.4
+
+- Adds a `keybd_event` fallback when `SendInput` returns `0`, which helps diagnose and recover from failed automatic paste key injection.

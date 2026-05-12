@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageGrab
 
+from plugin.logger import log, log_exception
+
 CF_UNICODETEXT = 13
 CF_DIB = 8
 CF_HDROP = 15
@@ -126,19 +128,34 @@ def read_clipboard_snapshot(plugin_dir: Path):
     return None
 
 
-def set_record_to_clipboard(record):
+def set_record_to_clipboard(record, plugin_dir=None):
     kind = record["kind"]
-    if kind == "text":
-        _set_clipboard_data(CF_UNICODETEXT, _text_to_hglobal(record["content"] or ""))
-    elif kind == "image":
-        _set_image(Path(record["image_path"]))
-    elif kind == "files":
-        _set_clipboard_data(CF_HDROP, _bytes_to_hglobal(_build_hdrop(record.get("files") or [])))
+    try:
+        if plugin_dir:
+            log(Path(plugin_dir), f"set clipboard start kind={kind}")
+        if kind == "text":
+            ok = _set_clipboard_data(CF_UNICODETEXT, _text_to_hglobal(record["content"] or ""))
+        elif kind == "image":
+            ok = _set_image(Path(record["image_path"]))
+        elif kind == "files":
+            ok = _set_clipboard_data(CF_HDROP, _bytes_to_hglobal(_build_hdrop(record.get("files") or [])))
+        else:
+            ok = False
+        if plugin_dir:
+            log(Path(plugin_dir), f"set clipboard done kind={kind} ok={ok}")
+        return ok
+    except Exception:
+        if plugin_dir:
+            log_exception(Path(plugin_dir), f"set clipboard failed kind={kind}")
+        raise
 
 
-def paste_record(record):
-    set_record_to_clipboard(record)
-    _spawn_delayed_paste()
+def paste_record(record, plugin_dir=None):
+    plugin_path = Path(plugin_dir) if plugin_dir else Path(__file__).resolve().parents[1]
+    if set_record_to_clipboard(record, plugin_path):
+        _spawn_delayed_paste(plugin_path)
+    else:
+        log(plugin_path, "paste skipped because clipboard write failed")
 
 
 def _read_text():
@@ -172,19 +189,21 @@ def _set_image(path):
     if not path.is_absolute():
         path = Path(__file__).resolve().parents[1] / path
     image = Image.open(path).convert("RGB")
-    _set_clipboard_data(CF_DIB, _bytes_to_hglobal(_image_to_dib(image)))
+    return _set_clipboard_data(CF_DIB, _bytes_to_hglobal(_image_to_dib(image)))
 
 
 def _set_clipboard_data(fmt, handle):
     if not handle:
-        return
+        return False
     if not _open_clipboard():
         kernel32.GlobalFree(handle)
-        return
+        return False
     try:
         user32.EmptyClipboard()
         if not user32.SetClipboardData(fmt, handle):
             kernel32.GlobalFree(handle)
+            return False
+        return True
     finally:
         user32.CloseClipboard()
 
@@ -232,25 +251,41 @@ def _send_ctrl_v():
         _keyboard_input(VK_V, KEYEVENTF_KEYUP),
         _keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
     )
-    user32.SendInput(4, events, ctypes.sizeof(INPUT))
+    sent = user32.SendInput(4, events, ctypes.sizeof(INPUT))
+    if sent == 0:
+        _send_ctrl_v_legacy()
+    return sent
+
+
+def _send_ctrl_v_legacy():
+    user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    user32.keybd_event(VK_V, 0, 0, 0)
+    user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
 
 def _keyboard_input(vk, flags):
     return INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(vk, 0, flags, 0, None)))
 
 
-def _spawn_delayed_paste():
+def _spawn_delayed_paste(plugin_dir):
     script = Path(__file__).resolve().parent / "delayed_paste.py"
     creationflags = 0
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-    subprocess.Popen(
-        [sys.executable, str(script), "0.35"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=creationflags
-    )
+    cmd = [sys.executable, str(script), "0.35", str(plugin_dir)]
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags
+        )
+        log(plugin_dir, f"delayed paste process started pid={process.pid} cmd={cmd!r}")
+    except Exception:
+        log_exception(plugin_dir, f"failed to start delayed paste process cmd={cmd!r}")
+        raise
 
 
 def _open_clipboard(retries=12, delay=0.04):

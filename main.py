@@ -14,6 +14,7 @@ from flowlauncher import FlowLauncher
 
 from plugin.clipboard_bridge import paste_record, set_record_to_clipboard
 from plugin.icons import ensure_icons
+from plugin.logger import log, log_exception
 from plugin.settings import Settings
 from plugin.storage import ClipboardStore
 
@@ -89,16 +90,31 @@ class PasteTool(FlowLauncher):
         ]
 
     def paste(self, record_id):
-        record = self.store.get(int(record_id))
-        if record:
-            paste_record(record)
+        try:
+            log(PLUGIN_DIR, f"paste action requested record_id={record_id}")
+            record = self.store.get(int(record_id))
+            if record:
+                log(PLUGIN_DIR, f"paste action found kind={record['kind']} title={record.get('title')!r}")
+                paste_record(record, PLUGIN_DIR)
+            else:
+                log(PLUGIN_DIR, f"paste action record not found record_id={record_id}")
+        except Exception:
+            log_exception(PLUGIN_DIR, f"paste action failed record_id={record_id}")
 
     def copy_only(self, record_id):
-        record = self.store.get(int(record_id))
-        if record:
-            set_record_to_clipboard(record)
+        try:
+            log(PLUGIN_DIR, f"copy_only action requested record_id={record_id}")
+            record = self.store.get(int(record_id))
+            if record:
+                log(PLUGIN_DIR, f"copy_only action found kind={record['kind']} title={record.get('title')!r}")
+                set_record_to_clipboard(record, PLUGIN_DIR)
+            else:
+                log(PLUGIN_DIR, f"copy_only action record not found record_id={record_id}")
+        except Exception:
+            log_exception(PLUGIN_DIR, f"copy_only action failed record_id={record_id}")
 
     def clear_history(self):
+        log(PLUGIN_DIR, "clear_history action requested")
         self.store.clear()
 
     def set_keep_days(self, days):

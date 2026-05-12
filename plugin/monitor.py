@@ -9,6 +9,7 @@ for rel in (".", "lib", "plugin"):
     sys.path.insert(0, str(PLUGIN_DIR / rel))
 
 from plugin.clipboard_bridge import read_clipboard_snapshot
+from plugin.logger import log, log_exception
 from plugin.settings import Settings
 from plugin.storage import ClipboardStore
 
@@ -17,6 +18,7 @@ def main():
     data_dir = PLUGIN_DIR / "Data"
     data_dir.mkdir(exist_ok=True)
     (data_dir / "monitor.pid").write_text(str(os.getpid()), encoding="utf-8")
+    log(PLUGIN_DIR, f"monitor started pid={os.getpid()}")
 
     store = ClipboardStore(PLUGIN_DIR)
     settings = Settings(PLUGIN_DIR)
@@ -30,7 +32,7 @@ def main():
                 _capture(store)
                 store.cleanup(settings.keep_days)
         except Exception:
-            pass
+            log_exception(PLUGIN_DIR, "monitor loop failed")
         time.sleep(0.35)
 
 
@@ -41,6 +43,7 @@ def _capture(store):
 
     source_app = _foreground_process_name()
     kind = snapshot["kind"]
+    log(PLUGIN_DIR, f"captured clipboard kind={kind} source_app={source_app!r}")
     if kind == "text":
         store.add_text(snapshot["text"], source_app, snapshot["hash"])
     elif kind == "image":
