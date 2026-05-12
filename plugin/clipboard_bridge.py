@@ -1,6 +1,8 @@
 import ctypes
 import hashlib
 import struct
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -11,6 +13,7 @@ CF_DIB = 8
 CF_HDROP = 15
 GMEM_MOVEABLE = 0x0002
 KEYEVENTF_KEYUP = 0x0002
+INPUT_KEYBOARD = 1
 VK_CONTROL = 0x11
 VK_V = 0x56
 
@@ -44,6 +47,31 @@ user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
 
 shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
 shell32.DragQueryFileW.restype = ctypes.c_uint
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [("ki", KEYBDINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("union", INPUT_UNION),
+    ]
+
+
+user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+user32.SendInput.restype = ctypes.c_uint
 
 
 def read_clipboard_snapshot(plugin_dir: Path):
@@ -110,8 +138,7 @@ def set_record_to_clipboard(record):
 
 def paste_record(record):
     set_record_to_clipboard(record)
-    time.sleep(0.08)
-    _send_ctrl_v()
+    _spawn_delayed_paste()
 
 
 def _read_text():
@@ -199,10 +226,31 @@ def _build_hdrop(paths):
 
 
 def _send_ctrl_v():
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    user32.keybd_event(VK_V, 0, 0, 0)
-    user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+    events = (INPUT * 4)(
+        _keyboard_input(VK_CONTROL, 0),
+        _keyboard_input(VK_V, 0),
+        _keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        _keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    )
+    user32.SendInput(4, events, ctypes.sizeof(INPUT))
+
+
+def _keyboard_input(vk, flags):
+    return INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(vk, 0, flags, 0, None)))
+
+
+def _spawn_delayed_paste():
+    script = Path(__file__).resolve().parent / "delayed_paste.py"
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    subprocess.Popen(
+        [sys.executable, str(script), "0.35"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags
+    )
 
 
 def _open_clipboard(retries=12, delay=0.04):

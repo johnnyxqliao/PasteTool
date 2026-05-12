@@ -18,6 +18,14 @@ from plugin.settings import Settings
 from plugin.storage import ClipboardStore
 
 
+def _kind_label(kind):
+    if kind == "image":
+        return "【Image】"
+    if kind == "files":
+        return "【File】"
+    return "【Text】"
+
+
 class PasteTool(FlowLauncher):
     def __init__(self):
         ensure_icons(PLUGIN_DIR)
@@ -100,12 +108,11 @@ class PasteTool(FlowLauncher):
 
     def _record_result(self, record, index):
         kind = record["kind"]
-        title = record["title"]
+        title = f'{_kind_label(kind)} {record["title"]}'
         icon = "Images\\text.png"
 
         if kind == "image":
             icon = record["preview_path"] or "Images\\image.png"
-            title = "图片"
         elif kind == "files":
             icon = "Images\\file.png"
 

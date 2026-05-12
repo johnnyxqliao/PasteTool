@@ -38,3 +38,8 @@ If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to mak
 
 - Removed `pywin32` and switched clipboard operations to built-in Windows APIs through `ctypes`.
 - Fixes `ImportError: DLL load failed while importing win32api` under Flow Launcher's embedded Python.
+
+### 0.1.2
+
+- Adds `【Text】`, `【Image】`, and `【File】` labels to result titles.
+- Sends paste from a delayed helper process so the target app can regain focus before `Ctrl+V`.
