@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - "README.md"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    env:
+      PLUGIN_ZIP: Flow.Launcher.Plugin.PasteTool.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+
+      - name: Read plugin version
+        id: version
+        shell: pwsh
+        run: |
+          $json = Get-Content plugin.json -Raw | ConvertFrom-Json
+          "version=$($json.Version)" >> $env:GITHUB_OUTPUT
+
+      - name: Install dependencies into plugin lib
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -t lib
+
+      - name: Generate default icons
+        run: python -c "from pathlib import Path; from plugin.icons import ensure_icons; ensure_icons(Path.cwd())"
+
+      - name: Build plugin zip
+        shell: pwsh
+        run: |
+          if (Test-Path $env:PLUGIN_ZIP) { Remove-Item $env:PLUGIN_ZIP }
+          Compress-Archive -Path `
+            plugin.json, main.py, requirements.txt, plugin, Images, lib `
+            -DestinationPath $env:PLUGIN_ZIP
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flow.Launcher.Plugin.PasteTool
+          path: ${{ env.PLUGIN_ZIP }}
+
+      - name: Publish GitHub release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: ${{ env.PLUGIN_ZIP }}
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

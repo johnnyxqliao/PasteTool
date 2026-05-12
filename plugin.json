@@ -1,0 +1,12 @@
+{
+  "ID": "b44a2f59-3c26-4a74-9d37-6a4d6d3de6b8",
+  "ActionKeyword": "c",
+  "Name": "Paste Tool",
+  "Description": "Persistent clipboard history for Flow Launcher with text, image, and file paste support.",
+  "Author": "liaox",
+  "Version": "0.1.0",
+  "Language": "python",
+  "Website": "https://github.com/liaox/PasteTool",
+  "IcoPath": "Images\\app.png",
+  "ExecuteFileName": "main.py"
+}

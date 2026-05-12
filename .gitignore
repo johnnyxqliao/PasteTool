@@ -1,0 +1,8 @@
+Data/
+Images/
+lib/
+.tmp_*/
+*.zip
+*.pyc
+__pycache__/
+.pytest_cache/
