@@ -12,6 +12,7 @@ Flow Launcher persistent clipboard history plugin.
 - `c clear` clears all stored records and cached images.
 - `c settings` shows retention options.
 - `c keep 7`, `c keep 14`, `c keep 30` changes history retention.
+- `c status` shows whether the background clipboard monitor is healthy.
 
 ## Build On GitHub
 
@@ -51,3 +52,9 @@ If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to mak
 ### 0.1.4
 
 - Adds a `keybd_event` fallback when `SendInput` returns `0`, which helps diagnose and recover from failed automatic paste key injection.
+
+### 0.1.5
+
+- Adds monitor heartbeat checks and `c status`.
+- Restarts the monitor when its pid is missing or heartbeat is stale.
+- Logs clipboard format ids when the clipboard changes but cannot be captured.

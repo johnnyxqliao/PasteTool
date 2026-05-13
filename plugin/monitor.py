@@ -13,6 +13,8 @@ from plugin.logger import log, log_exception
 from plugin.settings import Settings
 from plugin.storage import ClipboardStore
 
+HEARTBEAT_INTERVAL = 2.0
+
 
 def main():
     data_dir = PLUGIN_DIR / "Data"
@@ -23,12 +25,19 @@ def main():
     store = ClipboardStore(PLUGIN_DIR)
     settings = Settings(PLUGIN_DIR)
     last_sequence = _clipboard_sequence()
+    last_heartbeat = 0.0
 
     while True:
         try:
+            now = time.time()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                _write_heartbeat(last_sequence)
+                last_heartbeat = now
+
             sequence = _clipboard_sequence()
             if sequence != last_sequence:
                 last_sequence = sequence
+                log(PLUGIN_DIR, f"clipboard sequence changed sequence={sequence}")
                 _capture(store)
                 store.cleanup(settings.keep_days)
         except Exception:
@@ -39,6 +48,7 @@ def main():
 def _capture(store):
     snapshot = read_clipboard_snapshot(PLUGIN_DIR)
     if not snapshot:
+        log(PLUGIN_DIR, "clipboard changed but no supported snapshot was found")
         return
 
     source_app = _foreground_process_name()
@@ -50,6 +60,15 @@ def _capture(store):
         store.add_image(snapshot["image_path"], snapshot["preview_path"], source_app, snapshot["hash"])
     elif kind == "files":
         store.add_files(snapshot["paths"], source_app, snapshot["hash"])
+    _write_heartbeat(_clipboard_sequence(), kind)
+
+
+def _write_heartbeat(sequence, last_kind=""):
+    path = PLUGIN_DIR / "Data" / "monitor.heartbeat"
+    path.write_text(
+        f"{time.time()}\n{os.getpid()}\n{sequence}\n{last_kind}\n",
+        encoding="utf-8"
+    )
 
 
 def _clipboard_sequence():

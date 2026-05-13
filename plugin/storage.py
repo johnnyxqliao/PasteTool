@@ -103,6 +103,15 @@ class ClipboardStore:
             row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
         return self._format_row(row) if row else None
 
+    def stats(self):
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total, MAX(created_at) AS latest FROM records").fetchone()
+        latest = row["latest"] if row else None
+        return {
+            "total": int(row["total"] if row else 0),
+            "latest": datetime.fromtimestamp(latest).strftime("%Y/%m/%d %H:%M:%S") if latest else ""
+        }
+
     def cleanup(self, keep_days):
         cutoff = int(time.time()) - int(keep_days) * 86400
         with self._connect() as conn:

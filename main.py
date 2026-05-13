@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import ctypes
+import time
 from pathlib import Path
 
 PLUGIN_DIR = Path.absolute(Path(__file__).parent)
@@ -34,6 +35,10 @@ class PasteTool(FlowLauncher):
         self.settings = Settings(PLUGIN_DIR)
         super().__init__()
 
+    def init(self):
+        log(PLUGIN_DIR, "init requested")
+        self._ensure_monitor()
+
     def query(self, query):
         self._ensure_monitor()
         self.store.cleanup(self.settings.keep_days)
@@ -46,6 +51,9 @@ class PasteTool(FlowLauncher):
 
         if lower in ("settings", "setting", "设置"):
             return self._settings_results()
+
+        if lower in ("status",):
+            return self._status_results()
 
         if lower.startswith("keep "):
             return self._keep_results(lower)
@@ -164,6 +172,22 @@ class PasteTool(FlowLauncher):
                 return [self._command_result(f"设置保留 {days} 天", "按 Enter 应用并清理过期记录", "set_keep_days", days)]
         return self._settings_results()
 
+    def _status_results(self):
+        running, detail = self._monitor_status()
+        stats = self.store.stats()
+        title = "Monitor running" if running else "Monitor not healthy"
+        latest = stats["latest"] or "none"
+        return [
+            self._command_result(
+                title,
+                f"{detail} · records={stats['total']} · latest={latest}",
+                "noop"
+            )
+        ]
+
+    def noop(self):
+        pass
+
     def _command_result(self, title, subtitle, method, *params):
         return {
             "Title": title,
@@ -177,22 +201,17 @@ class PasteTool(FlowLauncher):
         }
 
     def _ensure_monitor(self):
-        pid_file = PLUGIN_DIR / "Data" / "monitor.pid"
-        if pid_file.exists():
-            try:
-                pid = int(pid_file.read_text(encoding="utf-8").strip())
-                if self._is_process_alive(pid):
-                    return
-            except Exception:
-                pass
-
+        running, detail = self._monitor_status()
+        if running:
+            return
+        log(PLUGIN_DIR, f"monitor not healthy, starting new monitor: {detail}")
         data_dir = PLUGIN_DIR / "Data"
         data_dir.mkdir(exist_ok=True)
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 
-        subprocess.Popen(
+        process = subprocess.Popen(
             [sys.executable, str(PLUGIN_DIR / "plugin" / "monitor.py"), str(PLUGIN_DIR)],
             cwd=str(PLUGIN_DIR),
             stdout=subprocess.DEVNULL,
@@ -200,6 +219,36 @@ class PasteTool(FlowLauncher):
             stdin=subprocess.DEVNULL,
             creationflags=creationflags
         )
+        log(PLUGIN_DIR, f"monitor process launched pid={process.pid}")
+
+    def _monitor_status(self):
+        pid_file = PLUGIN_DIR / "Data" / "monitor.pid"
+        heartbeat_file = PLUGIN_DIR / "Data" / "monitor.heartbeat"
+        if not pid_file.exists():
+            return False, "no monitor.pid"
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except Exception:
+            return False, "monitor.pid unreadable"
+
+        if not self._is_process_alive(pid):
+            return False, f"pid={pid} is not running"
+
+        if not heartbeat_file.exists():
+            return False, f"pid={pid} running but heartbeat is missing"
+
+        try:
+            lines = heartbeat_file.read_text(encoding="utf-8").splitlines()
+            heartbeat_at = float(lines[0])
+            sequence = lines[2] if len(lines) > 2 else ""
+            last_kind = lines[3] if len(lines) > 3 else ""
+            age = time.time() - heartbeat_at
+            if age > 8:
+                return False, f"pid={pid} heartbeat stale age={age:.1f}s"
+            suffix = f" · last_kind={last_kind}" if last_kind else ""
+            return True, f"pid={pid} · heartbeat={age:.1f}s · sequence={sequence}{suffix}"
+        except Exception:
+            return False, f"pid={pid} heartbeat unreadable"
 
     def _is_process_alive(self, pid):
         if os.name != "nt":

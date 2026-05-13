@@ -46,6 +46,8 @@ user32.GetClipboardData.argtypes = [ctypes.c_uint]
 user32.GetClipboardData.restype = ctypes.c_void_p
 user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
 user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+user32.EnumClipboardFormats.argtypes = [ctypes.c_uint]
+user32.EnumClipboardFormats.restype = ctypes.c_uint
 
 shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
 shell32.DragQueryFileW.restype = ctypes.c_uint
@@ -79,8 +81,11 @@ user32.SendInput.restype = ctypes.c_uint
 def read_clipboard_snapshot(plugin_dir: Path):
     has_dib = False
     if not _open_clipboard():
+        log(plugin_dir, "read clipboard failed: could not open clipboard")
         return None
     try:
+        formats = _available_formats()
+        log(plugin_dir, f"read clipboard available_formats={formats}")
         if user32.IsClipboardFormatAvailable(CF_HDROP):
             paths = _read_files()
             if paths:
@@ -126,6 +131,17 @@ def read_clipboard_snapshot(plugin_dir: Path):
         }
 
     return None
+
+
+def _available_formats():
+    formats = []
+    current = 0
+    while True:
+        current = user32.EnumClipboardFormats(current)
+        if current == 0:
+            break
+        formats.append(current)
+    return formats
 
 
 def set_record_to_clipboard(record, plugin_dir=None):
