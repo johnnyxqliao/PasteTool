@@ -289,7 +289,7 @@ def _spawn_delayed_paste(plugin_dir):
     creationflags = 0
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-    cmd = [sys.executable, str(script), "0.35", str(plugin_dir)]
+    cmd = [sys.executable, str(script), "0.01", str(plugin_dir)]
     try:
         process = subprocess.Popen(
             cmd,

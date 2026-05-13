@@ -58,3 +58,7 @@ If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to mak
 - Adds monitor heartbeat checks and `c status`.
 - Restarts the monitor when its pid is missing or heartbeat is stale.
 - Logs clipboard format ids when the clipboard changes but cannot be captured.
+
+### 0.1.6
+
+- Reduces automatic paste delay from 350ms to 10ms.
