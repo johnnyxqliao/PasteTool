@@ -130,23 +130,26 @@ internal static class ClipboardHelper
             Logger.Log("paste skipped because clipboard write failed");
             return;
         }
-        // Schedule paste at Background dispatcher priority — runs AFTER Flow Launcher
-        // processes its window-hide message, so the target window is refocused by then.
-        // No fixed-time sleep — fires as soon as the UI queue clears.
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher != null)
+        // Capture Flow Launcher's window handle (it's the foreground window at the moment
+        // Enter is pressed). Then on a background thread, poll until Windows transfers
+        // focus to the user's target window, and SendInput immediately. WPF dispatcher
+        // priorities alone don't account for OS-level focus transfer.
+        IntPtr flHwnd = GetForegroundWindow();
+        System.Threading.Tasks.Task.Run(() =>
         {
-            dispatcher.BeginInvoke(new Action(() =>
+            try
             {
-                try { SendCtrlV(); }
-                catch (Exception ex) { Logger.LogException("SendInput failed", ex); }
-            }), DispatcherPriority.Background);
-        }
-        else
-        {
-            try { SendCtrlV(); }
+                // Up to 250ms worth of 5ms polls — in practice 1-3 iterations.
+                for (int i = 0; i < 50; i++)
+                {
+                    IntPtr fg = GetForegroundWindow();
+                    if (fg != IntPtr.Zero && fg != flHwnd) break;
+                    Thread.Sleep(5);
+                }
+                SendCtrlV();
+            }
             catch (Exception ex) { Logger.LogException("SendInput failed", ex); }
-        }
+        });
     }
 
     public static string ForegroundProcessName()

@@ -47,6 +47,10 @@ Download `Flow.Launcher.Plugin.PasteTool.zip` from the GitHub Release, extract i
 
 ## Changelog
 
+### 0.3.1
+
+- Paste timing fixed. The previous `DispatcherPriority.Background` approach only sequenced work within WPF's dispatcher — it did not wait for Windows to transfer keyboard focus away from Flow Launcher, so `Ctrl+V` could still hit FL's own search box. Now polls `GetForegroundWindow()` (5ms intervals, up to 250ms) and fires `SendInput` the instant FL loses foreground.
+
 ### 0.3.0
 
 - File entries now cache the actual file bytes under `Data/files/<hash>/` (per-file size limit `max_cached_file_size_mb`, default 100MB). Re-paste still works after the original is moved or deleted; oversize files fall back to the original-path behavior.
