@@ -4,7 +4,7 @@
   "Name": "Paste Tool",
   "Description": "Persistent clipboard history for Flow Launcher with text, image, and file paste support.",
   "Author": "liaox",
-  "Version": "0.3.1",
+  "Version": "0.4.0",
   "Language": "csharp",
   "Website": "https://github.com/liaox/PasteTool",
   "IcoPath": "Images\\app.png",

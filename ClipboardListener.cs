@@ -2,13 +2,17 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
-using System.Windows.Threading;
 
 namespace Flow.Launcher.Plugin.PasteTool;
 
 /// <summary>
-/// Listens for Windows clipboard updates via AddClipboardFormatListener and a hidden HwndSource.
-/// Event-driven — no polling.
+/// Listens for clipboard updates via AddClipboardFormatListener on a hidden
+/// message-only window. Event-driven, zero polling.
+///
+/// Self-capture suppression: when the plugin itself writes to the clipboard
+/// (paste / copy_only actions), <see cref="SuppressFor"/> is called with a
+/// short window; any WM_CLIPBOARDUPDATE within that window is ignored to
+/// prevent re-recording our own writes as new history entries.
 /// </summary>
 internal class ClipboardListener : IDisposable
 {
@@ -22,39 +26,42 @@ internal class ClipboardListener : IDisposable
     private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
 
     private HwndSource? _source;
-    private readonly Action _onClipboardUpdate;
+    private readonly Action _onUpdate;
+    private static long _suppressUntilTicks;
 
-    public ClipboardListener(Action onClipboardUpdate)
+    public static void SuppressFor(int ms)
     {
-        _onClipboardUpdate = onClipboardUpdate;
+        var deadline = Environment.TickCount64 + ms;
+        if (deadline > _suppressUntilTicks) _suppressUntilTicks = deadline;
+    }
+
+    public static bool ShouldSuppress() => Environment.TickCount64 < _suppressUntilTicks;
+
+    public ClipboardListener(Action onUpdate)
+    {
+        _onUpdate = onUpdate;
     }
 
     public void Start()
     {
-        // Must run on a UI thread that pumps messages
         if (Application.Current?.Dispatcher == null)
         {
-            Logger.Log("ClipboardListener: no application dispatcher available");
+            Logger.Log("ClipboardListener: no application dispatcher");
             return;
         }
-
         Application.Current.Dispatcher.Invoke(() =>
         {
-            var parameters = new HwndSourceParameters("PasteToolClipboardListener")
+            var p = new HwndSourceParameters("PasteToolClipboardListener")
             {
-                ParentWindow = HWND_MESSAGE, // message-only window
+                ParentWindow = HWND_MESSAGE,
                 WindowStyle = 0
             };
-            _source = new HwndSource(parameters);
+            _source = new HwndSource(p);
             _source.AddHook(WndProc);
             if (!AddClipboardFormatListener(_source.Handle))
-            {
                 Logger.Log($"AddClipboardFormatListener failed err={Marshal.GetLastWin32Error()}");
-            }
             else
-            {
                 Logger.Log($"ClipboardListener registered hwnd={_source.Handle}");
-            }
         });
     }
 
@@ -62,7 +69,12 @@ internal class ClipboardListener : IDisposable
     {
         if (msg == WM_CLIPBOARDUPDATE)
         {
-            try { _onClipboardUpdate(); }
+            if (ShouldSuppress())
+            {
+                Logger.Log("clipboard update suppressed (self-write)");
+                return IntPtr.Zero;
+            }
+            try { _onUpdate(); }
             catch (Exception ex) { Logger.LogException("clipboard update handler failed", ex); }
         }
         return IntPtr.Zero;

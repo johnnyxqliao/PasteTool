@@ -9,6 +9,7 @@ internal class Settings
     public int KeepDays { get; set; } = 7;
     public int MaxResults { get; set; } = 80;
     public int MaxCachedFileSizeMB { get; set; } = 100;
+    public int PasteDelayMs { get; set; } = 80;
 
     private readonly string _path;
 
@@ -31,6 +32,7 @@ internal class Settings
             if (root.TryGetProperty("keep_days", out var kd) && kd.TryGetInt32(out var k)) KeepDays = k;
             if (root.TryGetProperty("max_results", out var mr) && mr.TryGetInt32(out var m)) MaxResults = m;
             if (root.TryGetProperty("max_cached_file_size_mb", out var mc) && mc.TryGetInt32(out var c)) MaxCachedFileSizeMB = c;
+            if (root.TryGetProperty("paste_delay_ms", out var pd) && pd.TryGetInt32(out var p)) PasteDelayMs = p;
         }
         catch (Exception ex)
         {
@@ -42,7 +44,13 @@ internal class Settings
     {
         try
         {
-            var payload = new { keep_days = KeepDays, max_results = MaxResults, max_cached_file_size_mb = MaxCachedFileSizeMB };
+            var payload = new
+            {
+                keep_days = KeepDays,
+                max_results = MaxResults,
+                max_cached_file_size_mb = MaxCachedFileSizeMB,
+                paste_delay_ms = PasteDelayMs
+            };
             File.WriteAllText(_path, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)

@@ -45,7 +45,29 @@ Download `Flow.Launcher.Plugin.PasteTool.zip` from the GitHub Release, extract i
 
 0.2.0 is a full rewrite in C#. The old Python history database is not migrated — existing records are abandoned and a fresh `Data/history.sqlite3` is created on first run.
 
+## Architecture
+
+The plugin is a 1:1 port of the original Python implementation's business logic, with a few inevitable changes for the C# environment:
+
+| Concern | Python | C# |
+|---|---|---|
+| Clipboard monitor | 350ms polling in a separate process | Event-driven via `AddClipboardFormatListener` (`WM_CLIPBOARDUPDATE`) inside Flow Launcher's process |
+| Reading clipboard | `ImageGrab` (PIL) + ctypes for `CF_HDROP` / `CF_UNICODETEXT` | Pure P/Invoke in [Win32Clipboard.cs](Win32Clipboard.cs) — CF_DIB → BMP reconstruction → PNG, CF_HDROP → `DragQueryFileW` |
+| Read priority | HDROP > Text (only if no DIB) > Image | Same |
+| Writing image | `PIL.Image.save("BMP")` → strip 14-byte header → `CF_DIB` | Same: `BmpBitmapEncoder` → strip 14 bytes → `SetClipboardData(CF_DIB, ...)` |
+| Writing files | Hand-pack `DROPFILES` + UTF-16LE | Same: hand-built struct + `Encoding.Unicode` |
+| Paste action | Spawn detached `delayed_paste.py` (sleep 10ms → `SendInput Ctrl+V`) | Spawn `PasteHelper.exe` (net48 console, sleep `paste_delay_ms` → `SendInput Ctrl+V`). The process boundary is essential — in-process `SendInput` races with Flow Launcher's window hide and focus transfer |
+| Self-capture suppression | (not handled) | Listener ignores `WM_CLIPBOARDUPDATE` for 800ms after the plugin's own writes |
+
 ## Changelog
+
+### 0.4.0
+
+- Full rewrite of the clipboard layer to match the Python implementation exactly. All clipboard reads and writes now use Win32 P/Invoke (`CF_UNICODETEXT`, `CF_DIB`, `CF_HDROP`) instead of WPF `Clipboard.*`.
+- Paste now spawns a separate `PasteHelper.exe` (net48 console) to send Ctrl+V after a short delay. This matches Python's `delayed_paste.py` model — the process boundary is required so Flow Launcher can finish hiding and the target window can reclaim focus before Ctrl+V fires. Tunable via `paste_delay_ms` in `Data/settings.json` (default 80ms).
+- Clipboard listener now suppresses captures for 800ms after the plugin writes to the clipboard, preventing the plugin's own paste / copy actions from being re-recorded as new history entries.
+- Cleanup now runs **only** on plugin Init (FL startup) and after `c keep N` — never on every query.
+- `c status` now reports whether `PasteHelper.exe` is present alongside the dll.
 
 ### 0.3.1
 

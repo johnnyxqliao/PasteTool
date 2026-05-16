@@ -15,7 +15,8 @@ jobs:
     runs-on: windows-latest
     env:
       PLUGIN_ZIP: Flow.Launcher.Plugin.PasteTool.zip
-      PROJECT: Flow.Launcher.Plugin.PasteTool.csproj
+      MAIN: Flow.Launcher.Plugin.PasteTool.csproj
+      HELPER: PasteHelper/PasteHelper.csproj
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +24,8 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "7.0.x"
+          dotnet-version: |
+            7.0.x
 
       - name: Read plugin version
         id: version
@@ -32,13 +34,13 @@ jobs:
           $json = Get-Content plugin.json -Raw | ConvertFrom-Json
           "version=$($json.Version)" >> $env:GITHUB_OUTPUT
 
-      - name: Restore
-        run: dotnet restore $env:PROJECT
+      - name: Restore main plugin
+        run: dotnet restore $env:MAIN
 
-      - name: Publish
+      - name: Publish main plugin
         shell: pwsh
         run: |
-          dotnet publish $env:PROJECT `
+          dotnet publish $env:MAIN `
             -c Release `
             -r win-x64 `
             --no-self-contained `
@@ -46,12 +48,24 @@ jobs:
             -p:DebugSymbols=false `
             -o publish
 
+      - name: Build PasteHelper (net48 console exe)
+        shell: pwsh
+        run: |
+          dotnet build $env:HELPER -c Release -p:DebugType=None -p:DebugSymbols=false -o publish-helper
+
+      - name: Stage PasteHelper alongside plugin dll
+        shell: pwsh
+        run: |
+          Copy-Item publish-helper/PasteHelper.exe publish/PasteHelper.exe -Force
+          if (Test-Path publish-helper/PasteHelper.exe.config) {
+            Copy-Item publish-helper/PasteHelper.exe.config publish/PasteHelper.exe.config -Force
+          }
+
       - name: Generate default icons if missing
         shell: pwsh
         run: |
           $dir = "publish/Images"
           if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-          # 1x1 transparent PNG fallback for any missing icons
           $bytes = [System.Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
           foreach ($name in @("app.png","text.png","image.png","file.png","copy.png","paste.png")) {
             $p = Join-Path $dir $name
@@ -62,7 +76,6 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path $env:PLUGIN_ZIP) { Remove-Item $env:PLUGIN_ZIP }
-          # Zip everything in publish/ — plugin.json and Images/ are copied there by the csproj
           Compress-Archive -Path publish/* -DestinationPath $env:PLUGIN_ZIP
 
       - name: Upload artifact

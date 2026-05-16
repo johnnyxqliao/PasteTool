@@ -25,16 +25,13 @@ internal class ClipboardStore
         {
             switch (Kind)
             {
-                case "text":
-                    return SingleLine(Content ?? "", 100);
-                case "image":
-                    return "图片";
+                case "text": return SingleLine(Content ?? "", 100);
+                case "image": return "图片";
                 case "files":
                     if (Files == null || Files.Count == 0) return "文件";
                     var name = Path.GetFileName(Files[0]);
                     return Files.Count > 1 ? $"文件：{name} 等 {Files.Count} 个文件" : $"文件：{name}";
-                default:
-                    return Kind;
+                default: return Kind;
             }
         }
 
@@ -56,8 +53,6 @@ internal class ClipboardStore
     private readonly string _dbPath;
     private readonly string _imagesDir;
     private readonly string _filesDir;
-
-    public string FilesCacheDir => _filesDir;
 
     public ClipboardStore(string pluginDir)
     {
@@ -101,14 +96,13 @@ internal class ClipboardStore
                 CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind);";
             cmd.ExecuteNonQuery();
         }
-        // Migration: add cached_files_json column if upgrading from older schema
         try
         {
             using var alter = conn.CreateCommand();
             alter.CommandText = "ALTER TABLE records ADD COLUMN cached_files_json TEXT";
             alter.ExecuteNonQuery();
         }
-        catch (SqliteException) { /* column already exists */ }
+        catch (SqliteException) { /* column exists */ }
     }
 
     public void AddText(string text, string sourceApp, string hash) =>
@@ -122,7 +116,9 @@ internal class ClipboardStore
             filesJson: JsonSerializer.Serialize(paths),
             cachedFilesJson: cachedPaths == null ? null : JsonSerializer.Serialize(cachedPaths));
 
-    private void Upsert(string kind, string hash, string sourceApp, string? content = null, string? imagePath = null, string? previewPath = null, string? filesJson = null, string? cachedFilesJson = null)
+    private void Upsert(string kind, string hash, string sourceApp,
+        string? content = null, string? imagePath = null, string? previewPath = null,
+        string? filesJson = null, string? cachedFilesJson = null)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         using var conn = Open();
@@ -297,7 +293,7 @@ internal class ClipboardStore
                 catch { rec.CachedFiles = null; }
             }
         }
-        catch (IndexOutOfRangeException) { /* old schema, column not present in select */ }
+        catch (IndexOutOfRangeException) { }
         return rec;
     }
 }
