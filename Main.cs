@@ -48,7 +48,8 @@ public class Main : IPlugin, IContextMenu
         if (lower == "status") return StatusResults();
         if (lower.StartsWith("keep ")) return KeepResults(lower);
 
-        _store.Cleanup(_settings.KeepDays);
+        // Cleanup runs once on Init (Flow Launcher startup) and when the user changes
+        // retention via `c keep N`. Skip it on each query to keep search responsive.
         var records = _store.Search(text, _settings.MaxResults);
         if (records.Count == 0)
         {
@@ -102,12 +103,27 @@ public class Main : IPlugin, IContextMenu
             _ => "Images\\text.png"
         };
         var kindLabel = record.Kind switch { "image" => "【Image】", "files" => "【File】", _ => "【Text】" };
+
+        // Ctrl+C on a selected Flow Launcher result copies Result.CopyText to clipboard.
+        // For text records this is the original content. For image/files we expose the
+        // absolute path as a fallback — rich image/file copy is only available via
+        // the context menu's "只复制到剪贴板" action.
+        string copyText = record.Kind switch
+        {
+            "image" => string.IsNullOrEmpty(record.ImagePath)
+                ? string.Empty
+                : (System.IO.Path.IsPathRooted(record.ImagePath) ? record.ImagePath : System.IO.Path.Combine(_pluginDir, record.ImagePath)),
+            "files" => record.Files != null && record.Files.Count > 0 ? string.Join(Environment.NewLine, record.Files) : string.Empty,
+            _ => record.Content ?? string.Empty
+        };
+
         return new Result
         {
             Title = $"{kindLabel} {record.Title()}",
             SubTitle = record.Subtitle(),
             IcoPath = icon,
             ContextData = record,
+            CopyText = copyText,
             Score = Math.Max(1, 1000 - index),
             Action = _ =>
             {
@@ -124,7 +140,7 @@ public class Main : IPlugin, IContextMenu
         if (now - _lastCaptureTicks < 50) return;
         _lastCaptureTicks = now;
 
-        var snapshot = ClipboardHelper.Read(_pluginDir);
+        var snapshot = ClipboardHelper.Read(_pluginDir, _settings.MaxCachedFileSizeMB);
         if (snapshot == null)
         {
             Logger.Log("clipboard update with no supported snapshot");
@@ -139,23 +155,23 @@ public class Main : IPlugin, IContextMenu
             case ClipboardHelper.SnapshotKind.Image:
                 _store.AddImage(snapshot.ImagePath!, snapshot.PreviewPath!, source, snapshot.Hash); break;
             case ClipboardHelper.SnapshotKind.Files:
-                _store.AddFiles(snapshot.Paths!, source, snapshot.Hash); break;
+                _store.AddFiles(snapshot.Paths!, snapshot.CachedPaths, source, snapshot.Hash); break;
         }
     }
 
     // ---- command results ----
     private List<Result> SettingsResults() => new()
     {
-        CommandResult($"当前保留时间：{_settings.KeepDays} 天", "输入 c keep 7 / c keep 14 / c keep 30 修改", () => { }),
+        CommandResult($"当前保留时间：{_settings.KeepDays} 天", "输入 c keep N 设置任意天数（如 c keep 4 / c keep 21）", () => { }),
         CommandResult("保留 7 天",  "按 Enter 应用", () => SetKeepDays(7)),
         CommandResult("保留 14 天", "按 Enter 应用", () => SetKeepDays(14)),
-        CommandResult("保留 30 天", "按 Enter 应用", () => SetKeepDays(30)),
+        CommandResult("保留 21 天", "按 Enter 应用", () => SetKeepDays(21)),
     };
 
     private List<Result> KeepResults(string lower)
     {
         var parts = lower.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 2 && int.TryParse(parts[1], out var d) && (d == 7 || d == 14 || d == 30))
+        if (parts.Length == 2 && int.TryParse(parts[1], out var d) && d > 0)
         {
             return new List<Result> { CommandResult($"设置保留 {d} 天", "按 Enter 应用并清理过期记录", () => SetKeepDays(d)) };
         }
