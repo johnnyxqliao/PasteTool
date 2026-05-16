@@ -160,12 +160,12 @@ internal class ClipboardStore
         using var cmd = conn.CreateCommand();
         if (string.IsNullOrWhiteSpace(query))
         {
-            cmd.CommandText = "SELECT * FROM records ORDER BY created_at DESC LIMIT $l";
+            cmd.CommandText = "SELECT * FROM records ORDER BY created_at DESC, id DESC LIMIT $l";
             cmd.Parameters.AddWithValue("$l", limit);
         }
         else
         {
-            cmd.CommandText = "SELECT * FROM records WHERE content LIKE $q OR files_json LIKE $q ORDER BY created_at DESC LIMIT $l";
+            cmd.CommandText = "SELECT * FROM records WHERE content LIKE $q OR files_json LIKE $q ORDER BY created_at DESC, id DESC LIMIT $l";
             cmd.Parameters.AddWithValue("$q", $"%{query}%");
             cmd.Parameters.AddWithValue("$l", limit);
         }

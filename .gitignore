@@ -3,6 +3,9 @@ Images/
 .tmp_*/
 *.zip
 
+# Claude Code local state
+.claude/settings.local.json
+
 # .NET
 bin/
 obj/

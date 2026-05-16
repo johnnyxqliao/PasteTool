@@ -61,6 +61,13 @@ The plugin is a 1:1 port of the original Python implementation's business logic,
 
 ## Changelog
 
+### 0.4.1
+
+- History is now strictly newest-first. Two fixes:
+  1. Each history `Result` sets `AddSelectedCount = false` — previously Flow Launcher's built-in frecency bumped frequently-pasted older items above newer captures.
+  2. SQL `ORDER BY created_at DESC, id DESC` — second key breaks ties when two captures happen in the same second (autoincrement `id` always increases).
+- Score widened to `int.MaxValue - index` so FL's internal score additions can never reorder the list.
+
 ### 0.4.0
 
 - Full rewrite of the clipboard layer to match the Python implementation exactly. All clipboard reads and writes now use Win32 P/Invoke (`CF_UNICODETEXT`, `CF_DIB`, `CF_HDROP`) instead of WPF `Clipboard.*`.
