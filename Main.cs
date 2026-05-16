@@ -122,7 +122,11 @@ public class Main : IPlugin, IContextMenu
             IcoPath = icon,
             ContextData = record,
             CopyText = copyText,
-            Score = Math.Max(1, 1000 - index),
+            // Big gap so FL's score additions can't reorder. Newest = highest score.
+            Score = int.MaxValue - index,
+            // Stop FL from bumping frequently-paste results up — we want strict
+            // newest-first ordering by created_at, not user-click frecency.
+            AddSelectedCount = false,
             Action = _ => { Paste(record); return true; }
         };
     }
