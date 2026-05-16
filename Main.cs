@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Threading;
 
 namespace Flow.Launcher.Plugin.PasteTool;
 
@@ -13,17 +13,22 @@ public class Main : IPlugin, IContextMenu
     private Settings _settings = null!;
     private ClipboardStore _store = null!;
     private ClipboardListener? _listener;
-    private long _lastCaptureTicks;
+    private string _pasteHelperPath = null!;
 
     public void Init(PluginInitContext context)
     {
         _context = context;
         _pluginDir = context.CurrentPluginMetadata.PluginDirectory;
         Logger.Init(_pluginDir);
-        Logger.Log("plugin Init");
+        Logger.Log("=========== plugin Init ===========");
 
         _settings = new Settings(_pluginDir);
         _store = new ClipboardStore(_pluginDir);
+        _pasteHelperPath = Path.Combine(_pluginDir, "PasteHelper.exe");
+        if (!File.Exists(_pasteHelperPath))
+            Logger.Log($"WARNING: PasteHelper.exe not found at {_pasteHelperPath}");
+
+        // One-shot cleanup on Flow Launcher startup. NOT triggered on every query.
         _store.Cleanup(_settings.KeepDays);
 
         _listener = new ClipboardListener(OnClipboardUpdate);
@@ -37,26 +42,26 @@ public class Main : IPlugin, IContextMenu
 
         if (lower is "clear" or "清空")
         {
-            return new List<Result> { CommandResult("清空所有剪贴板历史", "按 Enter 删除文本记录、图片缓存和文件记录", () =>
+            return new List<Result> { CommandResult("清空所有剪贴板历史", "按 Enter 删除所有记录、图片与文件缓存", () =>
             {
                 _store.Clear();
                 _context.API.ShowMsg("Paste Tool", "已清空剪贴板历史");
             }) };
         }
-
         if (lower is "settings" or "setting" or "设置") return SettingsResults();
         if (lower == "status") return StatusResults();
         if (lower.StartsWith("keep ")) return KeepResults(lower);
 
-        // Cleanup runs once on Init (Flow Launcher startup) and when the user changes
-        // retention via `c keep N`. Skip it on each query to keep search responsive.
+        // No cleanup here — by design, cleanup runs only on Init and after `c keep N`.
         var records = _store.Search(text, _settings.MaxResults);
         if (records.Count == 0)
         {
             return new List<Result> { new()
             {
                 Title = "暂无剪贴板历史",
-                SubTitle = string.IsNullOrEmpty(text) ? "正在记录剪贴板。复制文本、图片或文件后会显示在这里。" : "没有匹配的剪贴板历史。",
+                SubTitle = string.IsNullOrEmpty(text)
+                    ? "正在监听剪贴板。复制文本、图片或文件后会显示在这里。"
+                    : "没有匹配的剪贴板历史。",
                 IcoPath = "Images\\app.png",
                 Score = 10,
             } };
@@ -72,28 +77,21 @@ public class Main : IPlugin, IContextMenu
             new()
             {
                 Title = "只复制到剪贴板",
-                SubTitle = "不执行粘贴动作",
+                SubTitle = "把记录写入剪贴板，不发送 Ctrl+V",
                 IcoPath = "Images\\copy.png",
-                Action = _ =>
-                {
-                    ClipboardHelper.Write(record, _pluginDir);
-                    return true;
-                }
+                Action = _ => { CopyOnly(record); return true; }
             },
             new()
             {
                 Title = "复制并粘贴",
-                SubTitle = "恢复这条记录并发送 Ctrl+V",
+                SubTitle = "写剪贴板并发送 Ctrl+V 到光标位置",
                 IcoPath = "Images\\paste.png",
-                Action = _ =>
-                {
-                    ClipboardHelper.PasteRecord(record, _pluginDir);
-                    return true;
-                }
+                Action = _ => { Paste(record); return true; }
             }
         };
     }
 
+    // ---------- result builder ----------
     private Result BuildResult(ClipboardStore.Record record, int index)
     {
         var icon = record.Kind switch
@@ -104,16 +102,16 @@ public class Main : IPlugin, IContextMenu
         };
         var kindLabel = record.Kind switch { "image" => "【Image】", "files" => "【File】", _ => "【Text】" };
 
-        // Ctrl+C on a selected Flow Launcher result copies Result.CopyText to clipboard.
-        // For text records this is the original content. For image/files we expose the
-        // absolute path as a fallback — rich image/file copy is only available via
-        // the context menu's "只复制到剪贴板" action.
+        // CopyText is what Flow Launcher's built-in Ctrl+C copies. For text records this
+        // is the original content; for images/files it's the path(s) as a fallback.
         string copyText = record.Kind switch
         {
             "image" => string.IsNullOrEmpty(record.ImagePath)
                 ? string.Empty
-                : (System.IO.Path.IsPathRooted(record.ImagePath) ? record.ImagePath : System.IO.Path.Combine(_pluginDir, record.ImagePath)),
-            "files" => record.Files != null && record.Files.Count > 0 ? string.Join(Environment.NewLine, record.Files) : string.Empty,
+                : (Path.IsPathRooted(record.ImagePath) ? record.ImagePath : Path.Combine(_pluginDir, record.ImagePath)),
+            "files" => record.Files != null && record.Files.Count > 0
+                ? string.Join(Environment.NewLine, record.Files)
+                : string.Empty,
             _ => record.Content ?? string.Empty
         };
 
@@ -125,41 +123,126 @@ public class Main : IPlugin, IContextMenu
             ContextData = record,
             CopyText = copyText,
             Score = Math.Max(1, 1000 - index),
-            Action = _ =>
-            {
-                ClipboardHelper.PasteRecord(record, _pluginDir);
-                return true;
-            }
+            Action = _ => { Paste(record); return true; }
         };
     }
 
+    // ---------- actions ----------
+    /// <summary>
+    /// Write the record to the clipboard, then spawn PasteHelper.exe to send Ctrl+V
+    /// after a short delay. This mirrors the Python plugin's delayed_paste.py:
+    /// running SendInput in a separate process is the only reliable way to ensure
+    /// Flow Launcher has finished hiding and the target window has focus.
+    /// </summary>
+    private void Paste(ClipboardStore.Record record)
+    {
+        Logger.Log($"paste action: kind={record.Kind} id={record.Id}");
+        if (!WriteToClipboard(record))
+        {
+            Logger.Log("paste aborted: clipboard write failed");
+            return;
+        }
+        // Ask Flow Launcher to hide its main window so the previous foreground window
+        // can regain focus. PasteHelper will sleep briefly before SendInput.
+        try { _context.API.HideMainWindow(); } catch (Exception ex) { Logger.LogException("HideMainWindow failed", ex); }
+        SpawnPasteHelper();
+    }
+
+    private void CopyOnly(ClipboardStore.Record record)
+    {
+        Logger.Log($"copy_only action: kind={record.Kind} id={record.Id}");
+        WriteToClipboard(record);
+    }
+
+    /// <summary>
+    /// Writes the record back to the system clipboard using P/Invoke (CF_UNICODETEXT,
+    /// CF_DIB, or CF_HDROP) — 1:1 with the Python plugin's set_record_to_clipboard.
+    /// </summary>
+    private bool WriteToClipboard(ClipboardStore.Record record)
+    {
+        // Suppress our own clipboard listener for 800ms so this write doesn't get
+        // re-captured as a new history entry.
+        ClipboardListener.SuppressFor(800);
+
+        switch (record.Kind)
+        {
+            case "text":
+                return Win32Clipboard.WriteText(record.Content ?? string.Empty);
+
+            case "image":
+                if (string.IsNullOrEmpty(record.ImagePath)) return false;
+                var imgAbs = Path.IsPathRooted(record.ImagePath)
+                    ? record.ImagePath
+                    : Path.Combine(_pluginDir, record.ImagePath);
+                return Win32Clipboard.WriteImage(imgAbs);
+
+            case "files":
+                if (record.Files == null || record.Files.Count == 0) return false;
+                // Prefer cached copy if it still exists; fall back to the original path.
+                var paths = new List<string>(record.Files.Count);
+                for (int i = 0; i < record.Files.Count; i++)
+                {
+                    string? cached = record.CachedFiles != null && i < record.CachedFiles.Count
+                        ? record.CachedFiles[i]
+                        : null;
+                    paths.Add(!string.IsNullOrEmpty(cached) && File.Exists(cached) ? cached : record.Files[i]);
+                }
+                return Win32Clipboard.WriteFiles(paths);
+
+            default:
+                return false;
+        }
+    }
+
+    private void SpawnPasteHelper()
+    {
+        try
+        {
+            if (!File.Exists(_pasteHelperPath))
+            {
+                Logger.Log($"PasteHelper.exe missing: {_pasteHelperPath}");
+                return;
+            }
+            var psi = new ProcessStartInfo
+            {
+                FileName = _pasteHelperPath,
+                Arguments = _settings.PasteDelayMs.ToString(),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = _pluginDir
+            };
+            var proc = Process.Start(psi);
+            Logger.Log($"PasteHelper spawned pid={proc?.Id} delay_ms={_settings.PasteDelayMs}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogException("spawn PasteHelper failed", ex);
+        }
+    }
+
+    // ---------- listener callback ----------
     private void OnClipboardUpdate()
     {
-        // Debounce — listener can fire multiple times for one logical change
-        var now = Environment.TickCount64;
-        if (now - _lastCaptureTicks < 50) return;
-        _lastCaptureTicks = now;
-
-        var snapshot = ClipboardHelper.Read(_pluginDir, _settings.MaxCachedFileSizeMB);
+        var snapshot = Win32Clipboard.Read(_pluginDir, _settings.MaxCachedFileSizeMB);
         if (snapshot == null)
         {
             Logger.Log("clipboard update with no supported snapshot");
             return;
         }
-        var source = ClipboardHelper.ForegroundProcessName();
+        var source = Win32Clipboard.ForegroundProcessName();
         Logger.Log($"captured kind={snapshot.Kind} source={source}");
         switch (snapshot.Kind)
         {
-            case ClipboardHelper.SnapshotKind.Text:
+            case Win32Clipboard.SnapshotKind.Text:
                 _store.AddText(snapshot.Text ?? "", source, snapshot.Hash); break;
-            case ClipboardHelper.SnapshotKind.Image:
+            case Win32Clipboard.SnapshotKind.Image:
                 _store.AddImage(snapshot.ImagePath!, snapshot.PreviewPath!, source, snapshot.Hash); break;
-            case ClipboardHelper.SnapshotKind.Files:
+            case Win32Clipboard.SnapshotKind.Files:
                 _store.AddFiles(snapshot.Paths!, snapshot.CachedPaths, source, snapshot.Hash); break;
         }
     }
 
-    // ---- command results ----
+    // ---------- settings commands ----------
     private List<Result> SettingsResults() => new()
     {
         CommandResult($"当前保留时间：{_settings.KeepDays} 天", "输入 c keep N 设置任意天数（如 c keep 4 / c keep 21）", () => { }),
@@ -182,9 +265,10 @@ public class Main : IPlugin, IContextMenu
     {
         var stats = _store.Stats();
         var running = _listener != null;
+        var helperOk = File.Exists(_pasteHelperPath);
         return new List<Result> { CommandResult(
             running ? "Listener running" : "Listener not running",
-            $"records={stats.total} · latest={(string.IsNullOrEmpty(stats.latest) ? "none" : stats.latest)}",
+            $"records={stats.total} · latest={(string.IsNullOrEmpty(stats.latest) ? "none" : stats.latest)} · helper={(helperOk ? "ok" : "MISSING")}",
             () => { }) };
     }
 
