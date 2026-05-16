@@ -1,6 +1,6 @@
 # Paste Tool
 
-Flow Launcher persistent clipboard history plugin.
+Flow Launcher persistent clipboard history plugin (C# / .NET 7).
 
 ## Features
 
@@ -8,57 +8,49 @@ Flow Launcher persistent clipboard history plugin.
 - `c keyword` searches text content and copied file paths.
 - Supports text, images, and copied file lists.
 - Enter restores the selected record to the Windows clipboard and sends `Ctrl+V`.
-- Context menu, opened with `Shift+Enter` or right arrow, includes "copy only" without pasting.
+- Context menu (`Shift+Enter` or right arrow) includes "copy only" without pasting.
 - `c clear` clears all stored records and cached images.
 - `c settings` shows retention options.
 - `c keep 7`, `c keep 14`, `c keep 30` changes history retention.
-- `c status` shows whether the background clipboard monitor is healthy.
+- `c status` shows listener state and record count.
 
-## Build On GitHub
+## How it works
 
-Push this repository to GitHub, then run the `Release` workflow from the Actions tab.
+The plugin loads as a .NET assembly into the Flow Launcher process. `Init` registers a Win32 clipboard listener (`AddClipboardFormatListener`) on a hidden message-only window. Every clipboard change fires `WM_CLIPBOARDUPDATE`, which captures and stores the snapshot — **no polling, no separate process, monitoring starts the instant Flow Launcher starts**, regardless of whether the user has typed the `c` keyword.
 
-The workflow builds `Flow.Launcher.Plugin.PasteTool.zip` on `windows-latest`, installs all Python dependencies into `lib`, uploads the zip as an artifact, and publishes a GitHub Release when run on `main`.
+## Build / Release on GitHub
+
+Push this repository to GitHub. The `Release` workflow (Actions tab) runs on `windows-latest`:
+
+1. `actions/setup-dotnet` (7.0.x)
+2. `dotnet publish -c Release -r win-x64 --no-self-contained` produces all dependencies in `publish/`.
+3. Zips `publish/*` into `Flow.Launcher.Plugin.PasteTool.zip`.
+4. Publishes a GitHub Release tagged with `plugin.json`'s `Version`.
+
+## Local build
+
+```pwsh
+dotnet publish Flow.Launcher.Plugin.PasteTool.csproj -c Release -r win-x64 --no-self-contained -o publish
+```
+
+Copy `publish/*` into `%APPDATA%\FlowLauncher\Plugins\Flow.Launcher.Plugin.PasteTool-<version>\` and restart Flow Launcher.
 
 ## Install
 
-Download `Flow.Launcher.Plugin.PasteTool.zip` from the GitHub Release, extract it into Flow Launcher's plugin folder, then reload plugins or restart Flow Launcher.
+Download `Flow.Launcher.Plugin.PasteTool.zip` from the GitHub Release, extract into Flow Launcher's plugin folder, then restart Flow Launcher.
 
-## Notes
+## Migration from 0.1.x (Python)
 
-Flow Launcher's Python JSON-RPC results do not expose a reliable selected-row `Ctrl+C` hook. The plugin therefore maps:
-
-- `Enter`: copy and paste.
-- Context menu item "只复制到剪贴板": copy only.
-
-If Flow Launcher adds a JSON-RPC shortcut hook later, this can be changed to make `Ctrl+C` directly copy the selected history item.
+0.2.0 is a full rewrite in C#. The old Python history database is not migrated — existing records are abandoned and a fresh `Data/history.sqlite3` is created on first run.
 
 ## Changelog
 
-### 0.1.1
+### 0.2.0
 
-- Removed `pywin32` and switched clipboard operations to built-in Windows APIs through `ctypes`.
-- Fixes `ImportError: DLL load failed while importing win32api` under Flow Launcher's embedded Python.
+- Full rewrite in C# / .NET 7 (WPF).
+- Clipboard monitoring is now event-driven via `AddClipboardFormatListener` and starts on Flow Launcher launch — no need to first type `c`.
+- Removes the Python dependency and the separate monitor / delayed-paste helper processes.
 
-### 0.1.2
+### 0.1.x
 
-- Adds `【Text】`, `【Image】`, and `【File】` labels to result titles.
-- Sends paste from a delayed helper process so the target app can regain focus before `Ctrl+V`.
-
-### 0.1.3
-
-- Adds debug logging to `Data/paste_tool.log` for paste actions, clipboard writes, delayed paste helper startup, foreground window, and `SendInput` results.
-
-### 0.1.4
-
-- Adds a `keybd_event` fallback when `SendInput` returns `0`, which helps diagnose and recover from failed automatic paste key injection.
-
-### 0.1.5
-
-- Adds monitor heartbeat checks and `c status`.
-- Restarts the monitor when its pid is missing or heartbeat is stale.
-- Logs clipboard format ids when the clipboard changes but cannot be captured.
-
-### 0.1.6
-
-- Reduces automatic paste delay from 350ms to 10ms.
+- Python implementation. See git history for details.
