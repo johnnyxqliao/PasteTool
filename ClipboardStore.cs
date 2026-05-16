@@ -16,6 +16,7 @@ internal class ClipboardStore
         public string? ImagePath { get; set; }
         public string? PreviewPath { get; set; }
         public List<string>? Files { get; set; }
+        public List<string?>? CachedFiles { get; set; }
         public string? SourceApp { get; set; }
         public long CreatedAt { get; set; }
         public string CreatedDisplay => DateTimeOffset.FromUnixTimeSeconds(CreatedAt).LocalDateTime.ToString("yyyy/MM/dd HH:mm:ss");
@@ -54,6 +55,9 @@ internal class ClipboardStore
     private readonly string _pluginDir;
     private readonly string _dbPath;
     private readonly string _imagesDir;
+    private readonly string _filesDir;
+
+    public string FilesCacheDir => _filesDir;
 
     public ClipboardStore(string pluginDir)
     {
@@ -62,6 +66,8 @@ internal class ClipboardStore
         Directory.CreateDirectory(dataDir);
         _imagesDir = Path.Combine(dataDir, "images");
         Directory.CreateDirectory(_imagesDir);
+        _filesDir = Path.Combine(dataDir, "files");
+        Directory.CreateDirectory(_filesDir);
         _dbPath = Path.Combine(dataDir, "history.sqlite3");
         InitDb();
     }
@@ -76,22 +82,33 @@ internal class ClipboardStore
     private void InitDb()
     {
         using var conn = Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
-            CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                kind TEXT NOT NULL,
-                content TEXT,
-                image_path TEXT,
-                preview_path TEXT,
-                files_json TEXT,
-                source_app TEXT,
-                content_hash TEXT NOT NULL UNIQUE,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_records_created_at ON records(created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind);";
-        cmd.ExecuteNonQuery();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                CREATE TABLE IF NOT EXISTS records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    content TEXT,
+                    image_path TEXT,
+                    preview_path TEXT,
+                    files_json TEXT,
+                    cached_files_json TEXT,
+                    source_app TEXT,
+                    content_hash TEXT NOT NULL UNIQUE,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_records_created_at ON records(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind);";
+            cmd.ExecuteNonQuery();
+        }
+        // Migration: add cached_files_json column if upgrading from older schema
+        try
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE records ADD COLUMN cached_files_json TEXT";
+            alter.ExecuteNonQuery();
+        }
+        catch (SqliteException) { /* column already exists */ }
     }
 
     public void AddText(string text, string sourceApp, string hash) =>
@@ -100,10 +117,12 @@ internal class ClipboardStore
     public void AddImage(string imagePath, string previewPath, string sourceApp, string hash) =>
         Upsert("image", hash, sourceApp, imagePath: imagePath, previewPath: previewPath);
 
-    public void AddFiles(List<string> paths, string sourceApp, string hash) =>
-        Upsert("files", hash, sourceApp, filesJson: JsonSerializer.Serialize(paths));
+    public void AddFiles(List<string> paths, List<string?>? cachedPaths, string sourceApp, string hash) =>
+        Upsert("files", hash, sourceApp,
+            filesJson: JsonSerializer.Serialize(paths),
+            cachedFilesJson: cachedPaths == null ? null : JsonSerializer.Serialize(cachedPaths));
 
-    private void Upsert(string kind, string hash, string sourceApp, string? content = null, string? imagePath = null, string? previewPath = null, string? filesJson = null)
+    private void Upsert(string kind, string hash, string sourceApp, string? content = null, string? imagePath = null, string? previewPath = null, string? filesJson = null, string? cachedFilesJson = null)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         using var conn = Open();
@@ -124,13 +143,14 @@ internal class ClipboardStore
             }
         }
         using var ins = conn.CreateCommand();
-        ins.CommandText = @"INSERT INTO records (kind, content, image_path, preview_path, files_json, source_app, content_hash, created_at)
-            VALUES ($k, $c, $ip, $pp, $fj, $s, $h, $t)";
+        ins.CommandText = @"INSERT INTO records (kind, content, image_path, preview_path, files_json, cached_files_json, source_app, content_hash, created_at)
+            VALUES ($k, $c, $ip, $pp, $fj, $cfj, $s, $h, $t)";
         ins.Parameters.AddWithValue("$k", kind);
         ins.Parameters.AddWithValue("$c", (object?)content ?? DBNull.Value);
         ins.Parameters.AddWithValue("$ip", (object?)imagePath ?? DBNull.Value);
         ins.Parameters.AddWithValue("$pp", (object?)previewPath ?? DBNull.Value);
         ins.Parameters.AddWithValue("$fj", (object?)filesJson ?? DBNull.Value);
+        ins.Parameters.AddWithValue("$cfj", (object?)cachedFilesJson ?? DBNull.Value);
         ins.Parameters.AddWithValue("$s", sourceApp ?? string.Empty);
         ins.Parameters.AddWithValue("$h", hash);
         ins.Parameters.AddWithValue("$t", now);
@@ -191,16 +211,34 @@ internal class ClipboardStore
     private void DeleteWhere(string condition, params (string, object)[] parameters)
     {
         var imagesToDelete = new List<string>();
+        var cachedFileDirsToDelete = new HashSet<string>();
         using (var conn = Open())
         {
             using var sel = conn.CreateCommand();
-            sel.CommandText = $"SELECT image_path, preview_path FROM records WHERE {condition}";
+            sel.CommandText = $"SELECT image_path, preview_path, cached_files_json FROM records WHERE {condition}";
             foreach (var (k, v) in parameters) sel.Parameters.AddWithValue(k, v);
             using var reader = sel.ExecuteReader();
             while (reader.Read())
             {
                 if (!reader.IsDBNull(0)) imagesToDelete.Add(reader.GetString(0));
                 if (!reader.IsDBNull(1)) imagesToDelete.Add(reader.GetString(1));
+                if (!reader.IsDBNull(2))
+                {
+                    try
+                    {
+                        var cached = JsonSerializer.Deserialize<List<string?>>(reader.GetString(2));
+                        if (cached != null)
+                        {
+                            foreach (var p in cached)
+                            {
+                                if (string.IsNullOrEmpty(p)) continue;
+                                var dir = Path.GetDirectoryName(p);
+                                if (!string.IsNullOrEmpty(dir)) cachedFileDirsToDelete.Add(dir!);
+                            }
+                        }
+                    }
+                    catch { }
+                }
             }
             reader.Close();
 
@@ -217,6 +255,16 @@ internal class ClipboardStore
                 var path = Path.IsPathRooted(rel) ? rel : Path.Combine(_pluginDir, rel);
                 if (File.Exists(path) && path.StartsWith(_imagesDir, StringComparison.OrdinalIgnoreCase))
                     File.Delete(path);
+            }
+            catch { }
+        }
+
+        foreach (var dir in cachedFileDirsToDelete)
+        {
+            try
+            {
+                if (Directory.Exists(dir) && dir.StartsWith(_filesDir, StringComparison.OrdinalIgnoreCase))
+                    Directory.Delete(dir, recursive: true);
             }
             catch { }
         }
@@ -240,6 +288,16 @@ internal class ClipboardStore
             try { rec.Files = JsonSerializer.Deserialize<List<string>>(r.GetString(fjIdx)); }
             catch { rec.Files = new List<string>(); }
         }
+        try
+        {
+            var cfjIdx = r.GetOrdinal("cached_files_json");
+            if (!r.IsDBNull(cfjIdx))
+            {
+                try { rec.CachedFiles = JsonSerializer.Deserialize<List<string?>>(r.GetString(cfjIdx)); }
+                catch { rec.CachedFiles = null; }
+            }
+        }
+        catch (IndexOutOfRangeException) { /* old schema, column not present in select */ }
         return rec;
     }
 }

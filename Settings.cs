@@ -6,8 +6,9 @@ namespace Flow.Launcher.Plugin.PasteTool;
 
 internal class Settings
 {
-    public int KeepDays { get; set; } = 14;
+    public int KeepDays { get; set; } = 7;
     public int MaxResults { get; set; } = 80;
+    public int MaxCachedFileSizeMB { get; set; } = 100;
 
     private readonly string _path;
 
@@ -29,6 +30,7 @@ internal class Settings
             var root = doc.RootElement;
             if (root.TryGetProperty("keep_days", out var kd) && kd.TryGetInt32(out var k)) KeepDays = k;
             if (root.TryGetProperty("max_results", out var mr) && mr.TryGetInt32(out var m)) MaxResults = m;
+            if (root.TryGetProperty("max_cached_file_size_mb", out var mc) && mc.TryGetInt32(out var c)) MaxCachedFileSizeMB = c;
         }
         catch (Exception ex)
         {
@@ -40,7 +42,7 @@ internal class Settings
     {
         try
         {
-            var payload = new { keep_days = KeepDays, max_results = MaxResults };
+            var payload = new { keep_days = KeepDays, max_results = MaxResults, max_cached_file_size_mb = MaxCachedFileSizeMB };
             File.WriteAllText(_path, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)

@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace Flow.Launcher.Plugin.PasteTool;
 
@@ -15,9 +16,9 @@ internal static class ClipboardHelper
 {
     public enum SnapshotKind { Text, Image, Files }
 
-    public record Snapshot(SnapshotKind Kind, string Hash, string? Text, string? ImagePath, string? PreviewPath, List<string>? Paths);
+    public record Snapshot(SnapshotKind Kind, string Hash, string? Text, string? ImagePath, string? PreviewPath, List<string>? Paths, List<string?>? CachedPaths);
 
-    public static Snapshot? Read(string pluginDir)
+    public static Snapshot? Read(string pluginDir, int maxCachedFileSizeMB)
     {
         try
         {
@@ -27,7 +28,9 @@ internal static class ClipboardHelper
                 if (files.Count > 0)
                 {
                     var joined = string.Join("\n", files);
-                    return new Snapshot(SnapshotKind.Files, HashText(joined), null, null, null, files);
+                    var hash = HashText(joined);
+                    var cached = CacheFiles(files, hash, pluginDir, maxCachedFileSizeMB);
+                    return new Snapshot(SnapshotKind.Files, hash, null, null, null, files, cached);
                 }
             }
 
@@ -38,7 +41,7 @@ internal static class ClipboardHelper
                 var text = Clipboard.GetText();
                 if (!string.IsNullOrEmpty(text))
                 {
-                    return new Snapshot(SnapshotKind.Text, HashText(text), text, null, null, null);
+                    return new Snapshot(SnapshotKind.Text, HashText(text), text, null, null, null, null);
                 }
             }
 
@@ -64,7 +67,7 @@ internal static class ClipboardHelper
                     {
                         SaveBitmap(img, previewPath, 128);
                     }
-                    return new Snapshot(SnapshotKind.Image, hash, null, relImage, relPreview, null);
+                    return new Snapshot(SnapshotKind.Image, hash, null, relImage, relPreview, null, null);
                 }
             }
         }
@@ -100,7 +103,15 @@ internal static class ClipboardHelper
                 case "files":
                     if (record.Files == null || record.Files.Count == 0) return false;
                     var collection = new System.Collections.Specialized.StringCollection();
-                    foreach (var f in record.Files) collection.Add(f);
+                    for (int i = 0; i < record.Files.Count; i++)
+                    {
+                        // Prefer the cached copy if it still exists; fall back to the original path.
+                        string? cached = record.CachedFiles != null && i < record.CachedFiles.Count ? record.CachedFiles[i] : null;
+                        if (!string.IsNullOrEmpty(cached) && File.Exists(cached))
+                            collection.Add(cached);
+                        else
+                            collection.Add(record.Files[i]);
+                    }
                     Clipboard.SetFileDropList(collection);
                     return true;
             }
@@ -119,13 +130,23 @@ internal static class ClipboardHelper
             Logger.Log("paste skipped because clipboard write failed");
             return;
         }
-        // Delay slightly so Flow Launcher has time to hide and refocus the previous window
-        ThreadPool.QueueUserWorkItem(_ =>
+        // Schedule paste at Background dispatcher priority — runs AFTER Flow Launcher
+        // processes its window-hide message, so the target window is refocused by then.
+        // No fixed-time sleep — fires as soon as the UI queue clears.
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher != null)
         {
-            Thread.Sleep(80);
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { SendCtrlV(); }
+                catch (Exception ex) { Logger.LogException("SendInput failed", ex); }
+            }), DispatcherPriority.Background);
+        }
+        else
+        {
             try { SendCtrlV(); }
             catch (Exception ex) { Logger.LogException("SendInput failed", ex); }
-        });
+        }
     }
 
     public static string ForegroundProcessName()
@@ -138,6 +159,57 @@ internal static class ClipboardHelper
             return p.ProcessName + ".exe";
         }
         catch { return string.Empty; }
+    }
+
+    private static List<string?> CacheFiles(List<string> originals, string hash, string pluginDir, int maxCachedFileSizeMB)
+    {
+        var maxBytes = (long)maxCachedFileSizeMB * 1024 * 1024;
+        var cacheDir = Path.Combine(pluginDir, "Data", "files", hash);
+        var result = new List<string?>(originals.Count);
+        try
+        {
+            Directory.CreateDirectory(cacheDir);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogException($"create cache dir failed {cacheDir}", ex);
+            for (int i = 0; i < originals.Count; i++) result.Add(null);
+            return result;
+        }
+
+        for (int i = 0; i < originals.Count; i++)
+        {
+            string orig = originals[i];
+            try
+            {
+                if (!File.Exists(orig))
+                {
+                    // Directory or missing file — skip caching, keep null
+                    result.Add(null);
+                    continue;
+                }
+                var info = new FileInfo(orig);
+                if (info.Length > maxBytes)
+                {
+                    Logger.Log($"skip caching large file size={info.Length} path={orig}");
+                    result.Add(null);
+                    continue;
+                }
+                var name = Path.GetFileName(orig);
+                var dest = Path.Combine(cacheDir, $"{i:000}_{name}");
+                if (!File.Exists(dest))
+                {
+                    File.Copy(orig, dest, overwrite: false);
+                }
+                result.Add(dest);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogException($"cache file failed src={orig}", ex);
+                result.Add(null);
+            }
+        }
+        return result;
     }
 
     private static void SaveBitmap(BitmapSource src, string path, int maxSize = 0)
